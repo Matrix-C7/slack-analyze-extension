@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Slack History Capture</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <!-- Icon sprite (Lucide-style strokes, matching the web dashboard) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8z"/></symbol>
+      <symbol id="i-stack" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+      <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+      <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="8" rx="2"/><rect x="3" y="13" width="18" height="8" rx="2"/><path d="M7 7h.01M7 17h.01"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+      <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+      <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M1 21a8 8 0 0 1 16 0M17 4a4 4 0 0 1 0 8M23 21a8 8 0 0 0-5-7.4"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="header">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+        <!-- same mark as brand/logo.svg -->
+        <defs>
+          <linearGradient id="mark-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#7a2f84" /><stop offset="0.55" stop-color="#4a154b" /><stop offset="1" stop-color="#2c0a2e" />
+          </linearGradient>
+        </defs>
+        <rect width="64" height="64" rx="15" fill="url(#mark-bg)" />
+        <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" fill="none" stroke="#fff" stroke-opacity="0.22" stroke-width="1.5" />
+        <path d="M19 15h26a9 9 0 0 1 9 9v13a9 9 0 0 1-9 9H29.5l-8.6 7.2c-1.3 1.1-3.3.2-3.3-1.5V45.9A9 9 0 0 1 10 37V24a9 9 0 0 1 9-9z" fill="#fff" />
+        <rect x="20.5" y="30" width="6" height="9" rx="3" fill="#4a154b" />
+        <rect x="29" y="25" width="6" height="14" rx="3" fill="#4a154b" />
+        <rect x="37.5" y="20" width="6" height="19" rx="3" fill="#1d9bd1" />
+        <circle cx="50.5" cy="14.5" r="6.3" fill="#2eb67d" stroke="#3f0e40" stroke-width="2.6" />
+      </svg>
+      <div class="brand-text">
+        <div class="title">Slack History Capture</div>
+        <div class="sub" id="slackStatus">Looking for a Slack tab…</div>
+      </div>
+    </div>
+    <div class="chip" id="backendStatus" title="Backend status"><span class="dot"></span><span class="label">Backend</span></div>
+  </header>
+
+  <!-- At-a-glance health -->
+  <div class="health">
+    <div class="tile" id="tileAccount">
+      <span class="avatar" id="accountAvatar">?</span>
+      <div class="tile-text">
+        <div class="tile-label">Slack account</div>
+        <div class="tile-value" id="accountName">Not detected</div>
+      </div>
+    </div>
+    <div class="tile" id="tileRealtime" data-state="off">
+      <span class="pulse"><span></span></span>
+      <div class="tile-text">
+        <div class="tile-label">Real-time</div>
+        <div class="tile-value" id="realtimeState">—</div>
+      </div>
+    </div>
+  </div>
+  <div class="hint realtime-detail" id="realtimeStatus"></div>
+
+  <div id="remoteBanner" class="banner hidden" role="status"></div>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="sync" class="active" role="tab"><svg class="i"><use href="#i-sync"/></svg>Sync<span class="run-dot hidden" id="runDot"></span></button>
+    <button data-tab="channels" role="tab"><svg class="i"><use href="#i-list"/></svg>Channels <span id="selCount" class="pill">0</span></button>
+    <button data-tab="settings" role="tab"><svg class="i"><use href="#i-gear"/></svg>Settings</button>
+  </nav>
+
+  <!-- SYNC -->
+  <section id="tab-sync" class="tab active">
+    <div class="actions">
+      <button id="syncCurrent" class="btn primary lg"><svg class="i"><use href="#i-play"/></svg>Sync open channel</button>
+      <button id="syncSelected" class="btn lg"><svg class="i"><use href="#i-stack"/></svg>Selected <span class="count" id="selCount2">0</span></button>
+    </div>
+
+    <div id="progress" class="card progress hidden">
+      <div class="progress-head">
+        <span class="spinner" aria-hidden="true"></span>
+        <div class="progress-title">
+          <div id="progressLabel">—</div>
+          <div class="phase" id="progressPhase">Scrolling history</div>
+        </div>
+        <button id="stop" class="btn danger sm"><svg class="i"><use href="#i-stop"/></svg>Stop</button>
+      </div>
+      <div class="bar"><div id="progressBar"></div></div>
+      <div class="stats">
+        <div><b id="statInView">0</b><span>in view</span></div>
+        <div><b id="statOldest">—</b><span>back to</span></div>
+        <div><b id="statSent">0</b><span>sent</span></div>
+      </div>
+      <div class="hint" id="progressDetail"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-calendar"/></svg>History range</div>
+      <div class="presets" id="rangePresets">
+        <button data-range="7:days">7 days</button>
+        <button data-range="30:days">30 days</button>
+        <button data-range="3:months">3 months</button>
+        <button data-range="12:months">1 year</button>
+        <button data-range="0:all">All</button>
+      </div>
+      <div class="row">
+        <span class="muted">Custom</span>
+        <input id="rangeValue" type="number" min="1" max="1200" class="input num" />
+        <select id="rangeUnit" class="input">
+          <option value="days">days ago</option>
+          <option value="months">months ago</option>
+          <option value="all">all history</option>
+        </select>
+      </div>
+      <div class="hint" id="rangeHint"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-bolt"/></svg>Automation</div>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Live capture</b>
+          <span>New messages from every channel, DM and thread, in real time while Slack is open</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="liveCapture" /><span class="track"></span></span>
+      </label>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Auto-sync</b>
+          <span id="autoHint"></span>
+        </div>
+        <span class="switch"><input type="checkbox" id="autoEnabled" /><span class="track"></span></span>
+      </label>
+      <div class="row indent">
+        <svg class="i muted"><use href="#i-clock"/></svg>
+        <span class="muted">Every</span>
+        <select id="autoIntervalMinutes" class="input">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+          <option value="180">3 hours</option>
+          <option value="360">6 hours</option>
+          <option value="720">12 hours</option>
+          <option value="1440">24 hours</option>
+        </select>
+      </div>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Incremental</b>
+          <span>Auto-sync stops at messages already captured, so runs are quick</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="incremental" /><span class="track"></span></span>
+      </label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <svg class="i"><use href="#i-activity"/></svg>Activity
+        <span class="queue" id="queueInfo"></span>
+      </div>
+      <ul id="log" class="log"></ul>
+    </div>
+  </section>
+
+  <!-- CHANNELS -->
+  <section id="tab-channels" class="tab">
+    <div class="toolbar">
+      <div class="search">
+        <svg class="i"><use href="#i-search"/></svg>
+        <input id="channelFilter" type="search" placeholder="Filter conversations…" />
+      </div>
+      <button id="loadChannels" class="btn icon" title="Refresh from Slack sidebar"><svg class="i"><use href="#i-refresh"/></svg></button>
+    </div>
+    <div class="row between">
+      <div class="segmented" id="typeSeg">
+        <button data-type="" class="active">All</button>
+        <button data-type="channels">Channels</button>
+        <button data-type="dms">DMs</button>
+      </div>
+      <!-- kept for popup.js; driven by the segmented control -->
+      <select id="typeFilter" class="hidden">
+        <option value="">All</option>
+        <option value="channels">Channels</option>
+        <option value="dms">DMs</option>
+      </select>
+      <div class="small-links">
+        <a href="#" id="selectAll">Select visible</a>
+        <a href="#" id="selectNone">Clear</a>
+      </div>
+    </div>
+    <div class="hint list-meta" id="channelsFetched"></div>
+    <ul id="channelList" class="channel-list"></ul>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="tab">
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-server"/></svg>Connection</div>
+      <label class="field">
+        <span>Backend URL</span>
+        <input id="backendUrl" type="url" class="input" placeholder="http://localhost:4000" />
+      </label>
+      <label class="field">
+        <span>API key <code>INGEST_API_KEY</code></span>
+        <div class="with-action">
+          <input id="apiKey" type="password" class="input" autocomplete="off" />
+          <button id="revealKey" type="button" class="btn icon ghost" title="Show / hide key"><svg class="i"><use href="#i-eye"/></svg></button>
+        </div>
+      </label>
+      <div class="row">
+        <button id="testConnection" class="btn"><svg class="i"><use href="#i-check"/></svg>Test connection</button>
+        <span class="status-line" id="connMsg"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-monitor"/></svg>This browser</div>
+      <label class="field">
+        <span>Label <em>shown in the web UI next to the Slack account</em></span>
+        <input id="collectorLabel" type="text" class="input" maxlength="100" placeholder="e.g. Edge — Jane's laptop" />
+      </label>
+      <div class="hint mono" id="collectorInfo"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-paperclip"/></svg>Files &amp; images</div>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Archive attached files</b>
+          <span>Downloads files with this browser's Slack sign-in and stores them in the backend, so they stay viewable after Slack deletes them</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="archiveFiles" /><span class="track"></span></span>
+      </label>
+      <div class="field">
+        <span>File types</span>
+        <div class="presets" id="fileTypes">
+          <button type="button" data-kind="image">Images</button>
+          <button type="button" data-kind="video">Videos</button>
+          <button type="button" data-kind="pdf">PDFs</button>
+          <button type="button" data-kind="doc">Documents</button>
+          <button type="button" data-kind="other">Other</button>
+        </div>
+      </div>
+      <label class="field">
+        <span>Largest file</span>
+        <div class="unit"><input id="fileMaxMb" type="number" class="input" min="1" max="100" step="1" /><em>MB</em></div>
+      </label>
+      <div class="hint" id="fileStats">Larger files keep only Slack's preview image, when it has one.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><svg class="i"><use href="#i-sliders"/></svg>Capture behaviour</div>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Capture thread replies</b>
+          <span>Opens each thread that has replies; unchanged threads are skipped on later syncs</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="captureThreads" /><span class="track"></span></span>
+      </label>
+      <label class="switch-row">
+        <div class="switch-text">
+          <b>Verification pass</b>
+          <span>After scrolling up, scroll back down once to catch messages that rendered late</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="verifyPass" /><span class="track"></span></span>
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span>Scroll delay</span>
+          <div class="unit"><input id="scrollDelayMs" type="number" class="input" min="300" max="10000" step="100" /><em>ms</em></div>
+        </label>
+        <label class="field">
+          <span>Load patience</span>
+          <div class="unit"><input id="loadPatienceSec" type="number" class="input" min="10" max="600" step="5" /><em>sec</em></div>
+        </label>
+      </div>
+      <div class="hint">Scroll delay is the minimum wait per scroll step (the extension also waits for Slack to finish rendering). Raise load patience on slow connections.</div>
+    </div>
+
+    <div class="savebar">
+      <span class="status-line" id="settingsMsg"></span>
+      <button id="saveSettings" class="btn primary">Save settings</button>
+    </div>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
