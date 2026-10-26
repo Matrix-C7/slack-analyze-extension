@@ -144,6 +144,24 @@
       </label>
       <label class="switch-row">
         <div class="switch-text">
+          <b>Keep Slack tab active</b>
+          <span>Selects the Slack tab again when another tab is selected in its window, so the browser doesn't pause it</span>
+        </div>
+        <span class="switch"><input type="checkbox" id="keepSlackActive" /><span class="track"></span></span>
+      </label>
+      <div class="row indent">
+        <svg class="i muted"><use href="#i-clock"/></svg>
+        <span class="muted">Check every</span>
+        <select id="keepSlackActiveMinutes" class="input">
+          <option value="1">1 min</option>
+          <option value="5">5 min</option>
+          <option value="10">10 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+        </select>
+      </div>
+      <label class="switch-row">
+        <div class="switch-text">
           <b>Auto-sync</b>
           <span id="autoHint"></span>
         </div>

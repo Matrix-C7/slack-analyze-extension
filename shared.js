@@ -10,6 +10,8 @@ export const DEFAULT_SETTINGS = {
   autoIntervalMinutes: 60,
   incremental: true,
   liveCapture: true,
+  keepSlackActive: true, // re-select the Slack tab in its window when another tab is selected, so Chrome doesn't throttle or discard it
+  keepSlackActiveMinutes: 5,
   scrollDelayMs: 1200, // minimum wait after each scroll step; the scraper also waits for Slack to finish rendering
   loadPatienceSec: 60, // keep waiting this long for older history before deciding there is none
   verifyPass: true, // after scrolling up, scroll back down once to pick up rows that rendered late

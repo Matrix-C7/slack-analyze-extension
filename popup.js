@@ -26,6 +26,9 @@ function fillControls() {
   $('autoIntervalMinutes').value = String(settings.autoIntervalMinutes);
   $('incremental').checked = settings.incremental;
   $('liveCapture').checked = settings.liveCapture;
+  $('keepSlackActive').checked = settings.keepSlackActive;
+  $('keepSlackActiveMinutes').value = String(settings.keepSlackActiveMinutes);
+  $('keepSlackActiveMinutes').disabled = !settings.keepSlackActive;
   $('backendUrl').value = settings.backendUrl;
   $('apiKey').value = settings.apiKey;
   $('scrollDelayMs').value = settings.scrollDelayMs;
@@ -85,6 +88,8 @@ bindSetting('autoEnabled', 'autoEnabled');
 bindSetting('autoIntervalMinutes', 'autoIntervalMinutes', Number);
 bindSetting('incremental', 'incremental');
 bindSetting('liveCapture', 'liveCapture');
+bindSetting('keepSlackActive', 'keepSlackActive');
+bindSetting('keepSlackActiveMinutes', 'keepSlackActiveMinutes', Number);
 bindSetting('archiveFiles', 'archiveFiles');
 bindSetting('fileMaxMb', 'fileMaxMb', (v) => Math.min(100, Math.max(1, Math.round(Number(v)) || 50)));
 

@@ -291,14 +291,33 @@ async function downloadSlackFile(url, maxBytes, tabId, expectHtml) {
   return new Blob([bytes], { type: r.type });
 }
 
-async function uploadFile(file, blob, variant) {
+async function sha256Hex(blob) {
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function uploadFile(file, blob, variant, direct) {
   const s = await getSettings();
   const collector = await getCollector();
+  const mimeType = (blob.type || file.mimeType || '').split(';')[0].trim();
+  // Vercel drops request bodies over 4.5 MB. directUpload means PUT the bytes at Neon, then tell the API.
+  if (direct) {
+    const sha256 = await sha256Hex(blob);
+    const body = await withSource({ variant, mimeType, size: blob.size, sha256 });
+    const ticket = await api(`/api/ingest/files/${file.id}/upload`, { body });
+    if (!ticket.upload) return ticket;
+    const put = await fetch(ticket.upload.url, { method: 'PUT', headers: ticket.upload.headers, body: blob });
+    if (!put.ok) {
+      const text = await put.text().catch(() => '');
+      throw new FileError(`storage upload ${put.status}: ${text.slice(0, 200)}`, { status: put.status });
+    }
+    return api(`/api/ingest/files/${file.id}/upload/complete`, { body });
+  }
   const res = await fetch(`${s.backendUrl.replace(/\/+$/, '')}/api/ingest/files/${file.id}/content?variant=${variant}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/octet-stream',
-      'X-File-Type': (blob.type || file.mimeType || '').split(';')[0].trim(),
+      'X-File-Type': mimeType,
       'X-Collector-Id': collector.id,
       ...(s.apiKey ? { 'X-API-Key': s.apiKey } : {}),
     },
@@ -328,7 +347,7 @@ async function archiveFile(file, ctx) {
       continue;
     }
     try {
-      const res = await uploadFile(file, blob, src.variant);
+      const res = await uploadFile(file, blob, src.variant, ctx.directUpload);
       await updateFileStats({ stored: 1, bytes: res.alreadyStored ? 0 : blob.size, lastAt: Date.now() });
       return true;
     } catch (err) {
@@ -383,12 +402,12 @@ async function runFilePump() {
   try {
     for (const [workspaceId, target] of targets) {
       for (let round = 0; round < FILE_ROUNDS; round++) {
-        const { files = [] } = await api('/api/ingest/files/claim', {
+        const { files = [], directUpload = false } = await api('/api/ingest/files/claim', {
           body: await withSource({ workspaceId, kinds: s.fileTypes, maxBytes, limit: FILE_BATCH }, target.account),
         });
         if (!files.length) break;
         await updateFileStats({ running: true });
-        const results = await Promise.all(files.map((f) => archiveFile(f, { ...target, maxBytes })));
+        const results = await Promise.all(files.map((f) => archiveFile(f, { ...target, maxBytes, directUpload })));
         stored += results.filter(Boolean).length;
       }
     }
@@ -415,6 +434,25 @@ async function ping(tabId) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Chrome throttles background tabs and may discard them, which stalls the real-time feed and syncs.
+ * In every window that holds a Slack tab but has another tab selected, select the Slack tab again.
+ */
+async function keepSlackActive() {
+  const s = await getSettings();
+  if (!s.keepSlackActive) return;
+  const byWindow = new Map();
+  for (const tab of await chrome.tabs.query({ url: SLACK_URL })) {
+    if (!byWindow.has(tab.windowId) || tab.active) byWindow.set(tab.windowId, tab);
+  }
+  let switched = 0;
+  for (const tab of byWindow.values()) {
+    if (tab.active) continue;
+    if (await chrome.tabs.update(tab.id, { active: true }).catch(() => null)) switched++;
+  }
+  if (switched) await log('info', `Selected the Slack tab again in ${switched} window(s) to keep capture running`);
 }
 
 async function waitForContent(tabId, channelId, timeoutMs = 45000) {
@@ -615,6 +653,10 @@ async function scheduleAlarms() {
   if (s.autoEnabled) {
     chrome.alarms.create('autoSync', { periodInMinutes: Math.max(5, Number(s.autoIntervalMinutes) || 60), delayInMinutes: 1 });
   }
+  await chrome.alarms.clear('keepSlackActive');
+  if (s.keepSlackActive) {
+    chrome.alarms.create('keepSlackActive', { periodInMinutes: Math.max(1, Number(s.keepSlackActiveMinutes) || 5) });
+  }
   if (!(await chrome.alarms.get('flushQueue'))) chrome.alarms.create('flushQueue', { periodInMinutes: 0.5 });
 }
 
@@ -624,6 +666,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await sendHeartbeats();
     return pumpFiles();
   }
+  if (alarm.name === 'keepSlackActive') return keepSlackActive();
   if (alarm.name === 'autoSync') {
     const s = await getSettings();
     if (!s.autoEnabled || job) return;

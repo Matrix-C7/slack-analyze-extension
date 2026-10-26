@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Slack History Capture",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "description": "Captures Slack channel and DM history from the Slack web app and sends it, with attached files, to your Slack Analyze backend.",
   "permissions": ["storage", "alarms", "tabs"],
-  "host_permissions": ["https://app.slack.com/*", "https://files.slack.com/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "host_permissions": ["https://app.slack.com/*", "https://files.slack.com/*", "https://*.neon.tech/*", "http://localhost/*", "http://127.0.0.1/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
