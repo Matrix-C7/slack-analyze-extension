@@ -2,25 +2,26 @@
 
 The Chrome MV3 extension that captures Slack history for Slack Analyze.
 
-Capture Slack channel and DM history from the Slack web app, store it in PostgreSQL, and browse, search and analyze it in a Slack-style web UI.
+Capture Slack channel and DM history from the Slack web app, store it in MongoDB (files and images in Google Drive), and browse, search and analyze it in a Slack-style web UI.
 
 ```
 ┌──────────────────────┐   batches (HTTP, real time)   ┌──────────────┐     ┌──────────────┐
-│ Chrome extension     │ ─────────────────────────────▶│ Backend API  │────▶│ PostgreSQL   │
-│ (app.slack.com tab)  │   X-API-Key                   │ Fastify :4000│◀────│ :5432        │
-│ auto-scroll + live   │                               └──────┬───────┘     └──────────────┘
-└──────────────────────┘                                      │ REST + SSE (/api/stream)
-                                                              ▼
-                                                      ┌──────────────┐
-                                                      │ Next.js UI   │
-                                                      │ :3000        │
-                                                      └──────────────┘
+│ Chrome extension     │ ─────────────────────────────▶│ Backend API  │────▶│ MongoDB Atlas│
+│ (app.slack.com tab)  │   X-API-Key                   │ Fastify :4000│◀────│ (free M0)    │
+│ auto-scroll + live   │                               └──┬───┬───────┘     └──────────────┘
+└──────────────────────┘                                  │   └───────────▶ Google Drive (files)
+                                                          │ REST + SSE (/api/stream)
+                                                          ▼
+                                                  ┌──────────────┐
+                                                  │ Next.js UI   │
+                                                  │ :3000        │
+                                                  └──────────────┘
 ```
 
 | Repo | What it is |
 |---|---|
 | [slack-analyze-extension](https://github.com/core7matrix/slack-analyze-extension) | Chrome MV3 extension: scrapes the open Slack tab, auto-scrolls up through history, sends batches to the backend, timed auto-sync, live capture, offline retry queue |
-| [slack-analyze-backend](https://github.com/core7matrix/slack-analyze-backend) | Node 22 + TypeScript + Fastify. Ingest API (extension → DB), read/search/analytics API, Server-Sent Events for live updates. Applies DB migrations on startup |
+| [slack-analyze-backend](https://github.com/core7matrix/slack-analyze-backend) | Node 22 + TypeScript + Fastify. Ingest API (extension → DB), read/search/analytics API, Server-Sent Events for live updates. Creates its MongoDB indexes on startup |
 | [slack-analyze-frontend](https://github.com/core7matrix/slack-analyze-frontend) | Next.js 15 (App Router) + Tailwind: Slack-like message browser, search, analytics, sync status, admin dashboard |
 
 Clone them side by side (`slack-analyze-backend`, `slack-analyze-frontend`, `slack-analyze-extension` in one folder); the frontend's icon export writes into the extension checkout next to it.

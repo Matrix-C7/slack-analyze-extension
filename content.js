@@ -22,7 +22,7 @@
     botBadge: '.c-app_badge, [data-qa="bot_badge"]',
     text: '[data-qa="message-text"]',
     textFallback: '.c-message_kit__blocks, .c-message__body',
-    attachmentText: '.c-message_attachment__body, .c-message_attachment__text',
+    attachmentText: '.c-message_attachment__body, .c-message_attachment__text, .c-message_attachment__title',
     edited: '.c-message__edited_label',
     replyCount: '[data-qa="reply_bar_count"]',
     replyBar: '[data-qa="reply_bar_count"], [data-qa="reply_bar"], .c-message__reply_bar',
@@ -249,13 +249,214 @@
     return 'other';
   }
 
+  function decodeEntities(s) {
+    return (s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  }
+
+  /** `<url|label>` when the visible words differ from the URL; otherwise the bare URL. */
+  function linkToken(url, label) {
+    const href = String(url || '').trim().replace(/\|/g, '%7C');
+    const shown = clean(String(label || '').replace(/[|<>]/g, '')).replace(/\s+/g, ' ');
+    if (!href) return shown;
+    if (!shown || shown === href) return href;
+    return `<${href}|${shown}>`;
+  }
+
+  function linkUrl(a) {
+    const raw = a.getAttribute('data-stringify-link') || a.getAttribute('href') || '';
+    if (!raw || raw.startsWith('#') || /^\s*javascript:/i.test(raw)) return '';
+    let url;
+    try {
+      url = new URL(raw, location.href);
+    } catch {
+      return '';
+    }
+    if ((url.hostname === 'slack-redir.net' || url.hostname.endsWith('.slack-redir.net')) && url.searchParams.get('url')) {
+      try {
+        url = new URL(url.searchParams.get('url'));
+      } catch {
+        /* keep the outer url */
+      }
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:' && url.protocol !== 'tel:') return '';
+    return url.href;
+  }
+
+  function skipLink(a) {
+    return Boolean(a.closest('[data-member-id], .c-timestamp, [data-qa="message_sender_name"]'));
+  }
+
+  function isShown(el) {
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      const style = getComputedStyle(n);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  }
+
+  function allAnchors(el) {
+    const all = [...el.querySelectorAll('a[href]')];
+    if (el.matches?.('a[href]')) all.unshift(el);
+    return all;
+  }
+
+  /** Anchors whose href should be kept. Nested links keep the inner one. */
+  function capturedAnchors(el) {
+    const anchors = allAnchors(el).filter((a) => isShown(a) && !skipLink(a) && linkUrl(a) && (a.innerText || '').replace(/\u200b/g, '').trim());
+    return anchors.filter((a) => !anchors.some((inner) => inner !== a && a.contains(inner)));
+  }
+
+  /**
+   * Message text plus `<url|label>` for each real link. Uses the rendered innerText, and only
+   * rewrites a label when every copy of that label is itself a link (so "here … here" stays put
+   * until the rendered copy can show which one is the link).
+   */
+  function applyLinkTokens(plain, anchors) {
+    const needing = [];
+    for (const a of anchors) {
+      const raw = (a.innerText || '').replace(/\u200b/g, '');
+      const token = linkToken(linkUrl(a), raw);
+      if (!raw || !token.startsWith('<')) continue;
+      needing.push({ raw, token });
+    }
+    if (!needing.length) return plain;
+
+    const counts = new Map();
+    for (const item of needing) counts.set(item.raw, (counts.get(item.raw) || 0) + 1);
+    for (const [raw, n] of counts) {
+      let found = 0;
+      let at = 0;
+      while (at <= plain.length) {
+        const i = plain.indexOf(raw, at);
+        if (i === -1) break;
+        found++;
+        at = i + raw.length;
+      }
+      if (found !== n) return null;
+    }
+
+    let text = plain;
+    let cursor = 0;
+    for (const { raw, token } of needing) {
+      const at = text.indexOf(raw, cursor);
+      if (at === -1) return null;
+      text = text.slice(0, at) + token + text.slice(at + raw.length);
+      cursor = at + token.length;
+    }
+    return text;
+  }
+
+  // Off-screen document so a clone can be measured without touching Slack's message list.
+  let linkFrame;
+  function linkFrameDoc() {
+    if (linkFrame?.isConnected && linkFrame.contentDocument?.body) return linkFrame.contentDocument;
+    linkFrame = document.createElement('iframe');
+    linkFrame.setAttribute('aria-hidden', 'true');
+    linkFrame.tabIndex = -1;
+    const frameStyle = linkFrame.style;
+    frameStyle.setProperty('display', 'block', 'important');
+    frameStyle.setProperty('position', 'fixed', 'important');
+    frameStyle.setProperty('width', '960px', 'important');
+    frameStyle.setProperty('height', '400px', 'important');
+    frameStyle.setProperty('left', '-10000px', 'important');
+    frameStyle.setProperty('top', '0', 'important');
+    frameStyle.setProperty('border', '0', 'important');
+    frameStyle.setProperty('pointer-events', 'none', 'important');
+    document.documentElement.appendChild(linkFrame);
+    return linkFrame.contentDocument;
+  }
+
+  /** Clone rendered with private-use sentinels where captured links are, or null if it cannot be measured. */
+  function renderWithSentinels(el, anchors) {
+    let doc;
+    try {
+      doc = linkFrameDoc();
+    } catch {
+      return null;
+    }
+    if (!doc?.body) return null;
+    const clone = el.cloneNode(true);
+    const liveEls = [el, ...el.querySelectorAll('*')];
+    const cloneEls = [clone, ...clone.querySelectorAll('*')];
+    if (liveEls.length !== cloneEls.length) return null;
+    for (let i = 0; i < liveEls.length; i++) {
+      const style = getComputedStyle(liveEls[i]);
+      if (style.display === 'none' || style.visibility === 'hidden') cloneEls[i].style.display = 'none';
+      else {
+        cloneEls[i].style.display = style.display;
+        cloneEls[i].style.whiteSpace = style.whiteSpace;
+      }
+    }
+    const liveAnchors = allAnchors(el);
+    const cloneAnchors = allAnchors(clone);
+    if (liveAnchors.length !== cloneAnchors.length) return null;
+    const wrap = doc.createElement('div');
+    doc.body.replaceChildren(wrap);
+    wrap.appendChild(clone);
+    const indexByNode = new Map(anchors.map((a, i) => [a, i]));
+    try {
+      for (let i = cloneAnchors.length - 1; i >= 0; i--) {
+        const idx = indexByNode.get(liveAnchors[i]);
+        if (idx === undefined) continue;
+        cloneAnchors[i].replaceWith(doc.createTextNode(`\uE000${idx}\uE001`));
+      }
+      const source = clone.isConnected ? clone : wrap;
+      return (source.innerText || '').replace(/\u200b/g, '');
+    } finally {
+      doc.body.replaceChildren();
+    }
+  }
+
+  /** Puts each sentinel's link token into `plain`, using the clone only to tell duplicate labels apart. */
+  function transplantSentinels(plain, rendered, anchors) {
+    const re = /\uE000(\d+)\uE001/g;
+    let out = '';
+    let plainAt = 0;
+    let prev = 0;
+    let m;
+    while ((m = re.exec(rendered))) {
+      const between = rendered.slice(prev, m.index);
+      const at = plain.indexOf(between, plainAt);
+      if (at === -1) return null;
+      const anchor = anchors[Number(m[1])];
+      const raw = (anchor?.innerText || '').replace(/\u200b/g, '');
+      const labelAt = at + between.length;
+      if (!anchor || plain.slice(labelAt, labelAt + raw.length) !== raw) return null;
+      out += plain.slice(plainAt, labelAt) + linkToken(linkUrl(anchor), raw);
+      plainAt = labelAt + raw.length;
+      prev = m.index + m[0].length;
+    }
+    if (plain.slice(plainAt) !== rendered.slice(prev)) return null;
+    return out + plain.slice(plainAt);
+  }
+
+  function textWithLinks(el) {
+    if (!el) return '';
+    const plain = (el.innerText || '').replace(/\u200b/g, '');
+    const anchors = capturedAnchors(el);
+    if (!anchors.length) return clean(plain);
+    const fast = applyLinkTokens(plain, anchors);
+    if (fast !== null) return clean(fast);
+
+    const rendered = renderWithSentinels(el, anchors);
+    const transplanted = rendered ? transplantSentinels(plain, rendered, anchors) : null;
+    if (transplanted) return clean(transplanted);
+    if (!rendered) return clean(plain);
+    let out = rendered;
+    anchors.forEach((a, i) => {
+      out = out.replace(`\uE000${i}\uE001`, linkToken(linkUrl(a), a.innerText));
+    });
+    if (/\uE000\d+\uE001/.test(out) || (!out.trim() && plain.trim())) return clean(plain);
+    return clean(out);
+  }
+
   function extractMessage(node) {
     const ts = messageTs(node);
     if (!ts) return null;
 
     const textEl = node.querySelector(SEL.text) || node.querySelector(SEL.textFallback);
-    let text = clean(textEl?.innerText);
-    const attachments = [...node.querySelectorAll(SEL.attachmentText)].map((e) => clean(e.innerText)).filter(Boolean);
+    let text = textWithLinks(textEl);
+    const attachments = [...node.querySelectorAll(SEL.attachmentText)].map((e) => textWithLinks(e)).filter(Boolean);
     for (const a of attachments) if (!text.includes(a)) text = text ? `${text}\n\n${a}` : a;
 
     const senderEl = node.querySelector(SEL.senderName);
@@ -308,6 +509,7 @@
 
     const mentions = [...new Set([...(textEl?.querySelectorAll(SEL.mention) || [])].map((e) => e.getAttribute('data-member-id')).filter(Boolean))];
     const replyText = clean(node.querySelector(SEL.replyCount)?.innerText);
+    rememberUser(userId, userName, avatarUrl);
 
     // Captured half-loaded: placeholder blocks, still-collapsed text, or an empty body with nothing else in it.
     const partial =
@@ -918,11 +1120,64 @@
   const rtmStats = { socket: false, messages: 0, lastAt: null };
   const rtmPending = new Map(); // channelId -> Map(ts -> message)
   let rtmTimer = null;
+  // Slack user id → name, learned from the rendered page. Live socket events often have only the id.
+  const knownUsers = new Map();
+
+  function rememberUser(id, name, avatar) {
+    if (!id || !name) return;
+    const prev = knownUsers.get(id);
+    knownUsers.set(id, { userName: name, avatarUrl: avatar || prev?.avatarUrl || null });
+  }
+
+  /** Display name Slack would show: chosen display name, otherwise the real name, otherwise the handle. */
+  function profileName(profile) {
+    if (!profile || typeof profile !== 'object') return null;
+    const nested = profile.profile && typeof profile.profile === 'object' ? profile.profile : {};
+    return (
+      clean(profile.display_name) ||
+      clean(nested.display_name) ||
+      clean(profile.real_name) ||
+      clean(nested.real_name) ||
+      clean(profile.real_name_normalized) ||
+      clean(nested.real_name_normalized) ||
+      clean(profile.first_name) ||
+      clean(nested.first_name) ||
+      clean(profile.name) ||
+      clean(nested.name) ||
+      null
+    );
+  }
+
+  function profileAvatar(profile) {
+    if (!profile || typeof profile !== 'object') return null;
+    const nested = profile.profile && typeof profile.profile === 'object' ? profile.profile : {};
+    return profile.image_72 || nested.image_72 || profile.image_48 || nested.image_48 || null;
+  }
+
+  /** Sender of a message currently on screen, including a compact row that hides the name. */
+  function senderFromDom(ts) {
+    if (!TS_RE.test(ts)) return null;
+    const stamp = document.querySelector(`[data-ts="${ts}"]`);
+    let node = stamp?.closest(SEL.message);
+    let userId = null;
+    let avatarUrl = null;
+    while (node) {
+      userId = userId || node.querySelector(SEL.senderId)?.getAttribute('data-message-sender') || null;
+      avatarUrl = avatarUrl || node.querySelector(SEL.avatar)?.getAttribute('src') || null;
+      const userName = clean(node.querySelector(SEL.senderName)?.innerText) || null;
+      if (userName) return { userName, userId, avatarUrl };
+      let prev = node.previousElementSibling;
+      while (prev && !prev.matches?.(SEL.message)) prev = prev.previousElementSibling;
+      node = prev;
+    }
+    return userId || avatarUrl ? { userName: null, userId, avatarUrl } : null;
+  }
 
   // Message subtypes that change nothing worth storing.
   const RTM_SKIP = new Set(['message_deleted', 'tombstone', 'reminder_add', 'assistant_app_thread']);
 
-  /** Slack mrkdwn → the plain text Slack renders. User mentions stay as @U… and are named by the backend. */
+  /** Slack mrkdwn → the plain text Slack renders. User mentions stay as @U… and are named by the backend.
+   *  Labeled links stay as <url|label> so the archive can show the label and still open the URL. */
   function mrkdwnToText(s) {
     return (s || '')
       .replace(/<@([UW][A-Z0-9]+)(?:\|([^>]+))?>/g, (_, id, label) => `@${label || id}`)
@@ -930,8 +1185,8 @@
       .replace(/<!subteam\^[A-Z0-9]+(?:\|([^>]+))?>/g, (_, label) => label || '@group')
       .replace(/<!(here|channel|everyone)(?:\|[^>]*)?>/g, '@$1')
       .replace(/<!date\^[^|>]*\|([^>]+)>/g, '$1')
-      .replace(/<((?:https?|mailto|tel):[^|>]+)\|([^>]+)>/g, '$2')
-      .replace(/<((?:https?|mailto|tel):[^>]+)>/g, '$1')
+      .replace(/<((?:https?|mailto|tel):[^|>]+)\|([^>]+)>/g, (_, url, label) => linkToken(decodeEntities(url), decodeEntities(label)))
+      .replace(/<((?:https?|mailto|tel):[^|>]+)>/g, (_, url) => decodeEntities(url))
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&amp;/g, '&');
@@ -965,7 +1220,8 @@
     if (!msg || RTM_SKIP.has(event.subtype) || RTM_SKIP.has(msg.subtype)) return null;
     if (!TS_RE.test(msg.ts || '')) return null;
 
-    const profile = msg.user_profile || {};
+    const profile = msg.user_profile || event.user_profile || {};
+    const userObj = msg.user && typeof msg.user === 'object' ? msg.user : null;
     let text = mrkdwnToText(msg.text);
     for (const a of msg.attachments || []) {
       const t = clean(mrkdwnToText(a.text || a.fallback || a.title));
@@ -990,11 +1246,22 @@
       });
     }
     const mentions = [...new Set([...(msg.text || '').matchAll(/<@([UW][A-Z0-9]+)/g)].map((x) => x[1]))];
+    const userId = (typeof msg.user === 'string' && msg.user) || userObj?.id || msg.user_id || msg.bot_id || null;
+    const known = userId ? knownUsers.get(userId) : null;
+    const userName =
+      profileName(profile) ||
+      profileName(userObj) ||
+      clean(msg.bot_profile?.name) ||
+      clean(msg.username) ||
+      known?.userName ||
+      null;
+    const avatarUrl = profileAvatar(profile) || profileAvatar(userObj) || msg.bot_profile?.icons?.image_72 || msg.icons?.image_72 || known?.avatarUrl || null;
+    rememberUser(userId, userName, avatarUrl);
     return {
       ts: msg.ts,
-      userId: msg.user || msg.bot_id || null,
-      userName: clean(profile.display_name) || clean(profile.real_name) || clean(msg.bot_profile?.name) || clean(msg.username) || null,
-      avatarUrl: profile.image_72 || msg.bot_profile?.icons?.image_72 || msg.icons?.image_72 || null,
+      userId,
+      userName,
+      avatarUrl,
       isBot: Boolean(msg.bot_id) || msg.subtype === 'bot_message',
       text,
       threadTs: msg.thread_ts && msg.thread_ts !== msg.ts ? msg.thread_ts : null,
@@ -1007,6 +1274,69 @@
     };
   }
 
+  // Last resort for names: ask Slack's own API as the signed-in user (Slack Connect people and
+  // anyone not rendered yet are often missing from the page and the client store).
+  const userLookups = new Map(); // id -> Promise<{ userName, avatarUrl } | null>
+  const failedLookups = new Map(); // id -> time of the failed attempt
+
+  async function slackApi(teamId, method, params) {
+    const team = slackTeam(teamId);
+    if (!team?.token) return null;
+    const base = /^https:\/\/[^/]+\.slack\.com\//.test(team.url || '') ? team.url : `https://${team.domain}.slack.com/`;
+    const body = new FormData();
+    body.append('token', team.token);
+    for (const [k, v] of Object.entries(params)) body.append(k, v);
+    const res = await fetch(`${base}api/${method}`, { method: 'POST', body, credentials: 'include' });
+    const json = await res.json().catch(() => null);
+    return json?.ok ? json : null;
+  }
+
+  function lookupUser(teamId, id) {
+    if (!id || knownUsers.has(id)) return Promise.resolve(knownUsers.get(id) || null);
+    if (Date.now() - (failedLookups.get(id) || 0) < 10 * 60_000) return Promise.resolve(null);
+    if (!userLookups.has(id)) {
+      const job = (async () => {
+        try {
+          if (/^B[A-Z0-9]+$/.test(id)) {
+            const bot = (await slackApi(teamId, 'bots.info', { bot: id }))?.bot;
+            return bot?.name ? { userName: clean(bot.name), avatarUrl: bot.icons?.image_72 || null } : null;
+          }
+          const user = (await slackApi(teamId, 'users.info', { user: id }))?.user;
+          const userName = profileName(user);
+          return userName ? { userName, avatarUrl: profileAvatar(user) } : null;
+        } catch {
+          return null;
+        }
+      })().then((found) => {
+        userLookups.delete(id);
+        if (found) rememberUser(id, found.userName, found.avatarUrl);
+        else failedLookups.set(id, Date.now());
+        return found;
+      });
+      userLookups.set(id, job);
+    }
+    return userLookups.get(id);
+  }
+
+  /** Names senders still missing a name, and turns `@U…` mentions into `@Name`. */
+  async function nameFromSlackApi(teamId, messages) {
+    const ids = new Set();
+    for (const m of messages) {
+      if (!m.userName && m.userId) ids.add(m.userId);
+      for (const id of m.text.match(/@[UW][A-Z0-9]{6,}\b/g) || []) ids.add(id.slice(1));
+    }
+    if (!ids.size) return;
+    await Promise.all([...ids].map((id) => lookupUser(teamId, id)));
+    for (const m of messages) {
+      const known = !m.userName && m.userId ? knownUsers.get(m.userId) : null;
+      if (known) {
+        m.userName = known.userName;
+        m.avatarUrl = m.avatarUrl || known.avatarUrl;
+      }
+      m.text = m.text.replace(/@([UW][A-Z0-9]{6,})\b/g, (all, id) => (knownUsers.get(id) ? `@${knownUsers.get(id).userName}` : all));
+    }
+  }
+
   async function flushRtm() {
     rtmTimer = null;
     const batches = [...rtmPending.entries()];
@@ -1016,6 +1346,23 @@
     const account = accountInfo();
     for (const [channelId, byTs] of batches) {
       const messages = [...byTs.values()];
+      for (const m of messages) {
+        if (!m.userName && m.userId) {
+          const known = knownUsers.get(m.userId);
+          if (known) {
+            m.userName = known.userName;
+            m.avatarUrl = m.avatarUrl || known.avatarUrl;
+          }
+        }
+        if (m.userName && m.userId) continue;
+        const seen = senderFromDom(m.ts);
+        if (!seen) continue;
+        m.userId = m.userId || seen.userId;
+        m.userName = m.userName || seen.userName || (m.userId && knownUsers.get(m.userId)?.userName) || null;
+        m.avatarUrl = m.avatarUrl || seen.avatarUrl || null;
+        rememberUser(m.userId, m.userName, m.avatarUrl);
+      }
+      await nameFromSlackApi(workspace.id, messages);
       await send({ type: 'live', origin: 'rtm', workspace, account, channel: conversationInfo(channelId, messages[0]), messages });
     }
   }
