@@ -65,6 +65,9 @@ async function enqueue(path, body, method) {
 }
 
 /** Sends to the backend; on network/server failure the payload is queued for retry. */
+/** Set when the backend has no /api/ingest/reactions yet (older version): skip live reactions for a while. */
+let reactionsUnsupportedUntil = 0;
+
 async function deliver(path, body, method = 'POST') {
   try {
     const result = await api(path, { method, body });
@@ -737,6 +740,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         })(),
       );
     }
+    case 'reactions':
+      return reply(
+        (async () => {
+          const remote = await remoteState();
+          if (remote.status !== 'active') return { ok: false };
+          const excluded = remote.excluded[msg.workspace?.id] ?? [];
+          const events = (msg.events ?? []).filter((e) => !excluded.includes(e.channelId));
+          if (!events.length || Date.now() < reactionsUnsupportedUntil) return { ok: false };
+          try {
+            // Best effort, never queued: a missed reaction is corrected by the next capture of that conversation.
+            await api('/api/ingest/reactions', { body: await withSource({ workspace: msg.workspace, events }, msg.account) });
+            return { ok: true };
+          } catch (err) {
+            // Older backend without this endpoint: stay quiet and try again later.
+            if (err.status === 404) reactionsUnsupportedUntil = Date.now() + 10 * 60_000;
+            return { ok: false };
+          }
+        })(),
+      );
     case 'progress':
       if (job?.current && job.current.id === msg.channelId) {
         job.current = {

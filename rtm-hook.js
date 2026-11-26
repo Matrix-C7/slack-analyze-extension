@@ -13,11 +13,16 @@
 
   function forward(data) {
     // Cheap pre-filter: most frames are presence, typing and pings.
-    if (typeof data !== 'string' || !data.includes('"message')) return;
+    if (typeof data !== 'string' || !(data.includes('"message') || data.includes('"reaction_'))) return;
     let event;
     try {
       event = JSON.parse(data);
     } catch {
+      return;
+    }
+    // Reactions added / removed on a message: forwarded as they are (no sender lookup needed).
+    if ((event?.type === 'reaction_added' || event?.type === 'reaction_removed') && event.item?.type === 'message') {
+      window.postMessage({ __slackCapture: 'rtm', event }, location.origin);
       return;
     }
     if (event?.type !== 'message') return;

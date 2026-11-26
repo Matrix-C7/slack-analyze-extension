@@ -1268,7 +1268,12 @@
       replyCount: msg.reply_count || 0,
       isEdited: Boolean(msg.edited),
       subtype: msg.subtype || null,
-      ...(msg.reactions ? { reactions: msg.reactions.map((r) => ({ emoji: r.name, count: r.count || 1 })) } : {}),
+      // An edit event carries the whole message, so a missing list means every reaction was removed.
+      ...(msg.reactions
+        ? { reactions: msg.reactions.map((r) => ({ emoji: r.name, count: r.count || 1 })) }
+        : event.subtype === 'message_changed'
+          ? { reactions: [] }
+          : {}),
       files,
       mentions,
     };
@@ -1367,10 +1372,42 @@
     }
   }
 
+  // Live reaction changes (reaction_added / reaction_removed), sent in small batches.
+  let rtmReactions = [];
+  let reactionTimer = null;
+
+  async function flushReactions() {
+    reactionTimer = null;
+    const events = rtmReactions;
+    rtmReactions = [];
+    const workspace = workspaceInfo();
+    if (!workspace.id || !events.length) return;
+    await send({ type: 'reactions', workspace, account: accountInfo(), events });
+  }
+
+  function onReaction(event) {
+    const channelId = event.item?.channel;
+    const ts = event.item?.ts;
+    if (typeof channelId !== 'string' || !/^[CDG][A-Z0-9]+$/.test(channelId) || !TS_RE.test(ts || '') || !event.reaction) return;
+    rtmReactions.push({
+      channelId,
+      ts,
+      emoji: String(event.reaction).replace(/::skin-tone-\d$/, ''),
+      userId: typeof event.user === 'string' ? event.user : null,
+      added: event.type === 'reaction_added',
+      eventTs: String(event.event_ts || event.ts || `${ts}:${event.user}:${event.reaction}:${Date.now()}`),
+    });
+    reactionTimer ??= setTimeout(flushReactions, 700);
+  }
+
   window.addEventListener('message', (e) => {
     if (e.source !== window || e.origin !== location.origin) return;
     if (e.data?.__slackCapture !== 'rtm' || !liveEnabled) return;
     const event = e.data.event;
+    if (event?.type === 'reaction_added' || event?.type === 'reaction_removed') {
+      onReaction(event);
+      return;
+    }
     const channelId = event?.channel;
     if (typeof channelId !== 'string' || !/^[CDG][A-Z0-9]+$/.test(channelId)) return;
     const m = fromRtm(event);
