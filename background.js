@@ -712,6 +712,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         runId: msg.runId ?? null,
         reachedStart: msg.reachedStart ?? false,
         origin: msg.origin ?? 'dom', // 'rtm' = from Slack's real-time socket (any conversation, not just the open one)
+        // 'notification' = fetched because a Slack desktop notification showed a message live capture had missed
+        ...(msg.via ? { via: msg.via } : {}),
         messages: msg.messages,
       };
       return reply(
@@ -734,7 +736,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             await publishState();
           }
           if (msg.type === 'live' && msg.messages.length) {
-            await log('info', `Live${msg.origin === 'rtm' ? ' (real-time)' : ''}: ${msg.messages.length} message(s) from ${msg.channel.name}`);
+            await log(
+              'info',
+              msg.via === 'notification'
+                ? `Notification backup: live capture missed ${msg.channel.name}; recovered ${msg.messages.length} message(s)`
+                : `Live${msg.origin === 'rtm' ? ' (real-time)' : ''}: ${msg.messages.length} message(s) from ${msg.channel.name}`,
+            );
           }
           return { ok: Boolean(res) };
         })(),

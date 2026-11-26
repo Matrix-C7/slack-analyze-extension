@@ -411,6 +411,12 @@ function renderRealtime(rtm, hasTab) {
     value = 'Not detected';
     detail = 'Slack’s real-time feed wasn’t seen — reload the Slack tab.';
   }
+  // Notification backup: desktop notifications Slack showed, and messages fetched because live capture missed them.
+  const n = rtm?.notifications;
+  if (settings.liveCapture && n?.seen) {
+    const backup = `Notifications: ${n.seen.toLocaleString()} seen · ${n.recovered.toLocaleString()} recovered`;
+    detail = detail ? `${detail} · ${backup}` : backup;
+  }
   $('tileRealtime').dataset.state = state;
   $('realtimeState').textContent = value;
   $('realtimeStatus').textContent = detail;

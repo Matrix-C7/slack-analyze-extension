@@ -168,5 +168,60 @@
     }
   }
 
+  // ---- Browser notifications (backup signal) ----
+  // When Slack shows a desktop notification from this page, hand its title / text / tag / data to content.js.
+  // content.js uses it only as a signal: if live capture missed that message, it fetches the conversation.
+  // The notification itself is shown exactly as before.
+  function plain(value) {
+    try {
+      const json = JSON.stringify(value ?? null);
+      return json && json.length < 20000 ? JSON.parse(json) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function reportNotification(title, options) {
+    try {
+      window.postMessage(
+        {
+          __slackCapture: 'notification',
+          title: String(title ?? ''),
+          body: String(options?.body ?? ''),
+          tag: options?.tag != null ? String(options.tag) : null,
+          data: plain(options?.data),
+          at: Date.now(),
+        },
+        location.origin,
+      );
+    } catch {
+      // never get in the way of Slack's notification
+    }
+  }
+
+  const NativeNotification = window.Notification;
+  if (typeof NativeNotification === 'function') {
+    window.Notification = new Proxy(NativeNotification, {
+      construct(target, args, newTarget) {
+        reportNotification(args[0], args[1]);
+        return Reflect.construct(target, args, newTarget === window.Notification ? target : newTarget);
+      },
+      // Static members (permission, requestPermission, maxActions) must run against the real constructor.
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' && prop !== 'prototype' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  const swProto = window.ServiceWorkerRegistration?.prototype;
+  if (swProto && typeof swProto.showNotification === 'function') {
+    const nativeShow = swProto.showNotification;
+    swProto.showNotification = function showNotification(title, options) {
+      reportNotification(title, options);
+      return nativeShow.call(this, title, options);
+    };
+  }
+
   window.WebSocket = CapturingWebSocket;
 })();
