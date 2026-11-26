@@ -1415,6 +1415,7 @@
     rtmStats.socket = true;
     rtmStats.messages++;
     rtmStats.lastAt = Date.now();
+    noteRtm(channelId, m.text);
     if (!rtmPending.has(channelId)) rtmPending.set(channelId, new Map());
     const pending = rtmPending.get(channelId);
     // An edit right after the message: keep the sender details only the original event carried.
@@ -1422,6 +1423,129 @@
     pending.set(m.ts, prev ? { ...m, userName: m.userName ?? prev.userName, avatarUrl: m.avatarUrl ?? prev.avatarUrl } : m);
     // Short delay so a burst (message + its edit, several replies) goes out as one request per conversation.
     rtmTimer ??= setTimeout(flushRtm, 700);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Browser notifications as a backup signal. rtm-hook.js reports every desktop notification Slack shows from this
+  // page. A few seconds later we check that live capture already delivered a message for that conversation; if not
+  // (socket dropped, tab throttled, …) the conversation's recent messages are fetched through Slack's API and sent
+  // like live messages. Nothing is stored from the notification text itself.
+  const NOTIFY_CHECK_DELAY = 8000;
+  const notifyStats = { seen: 0, recovered: 0, lastAt: null };
+  const rtmSeen = new Map(); // channelId -> [{ at, text }] recent live messages
+
+  function noteRtm(channelId, text) {
+    const list = rtmSeen.get(channelId) ?? [];
+    list.push({ at: Date.now(), text: clean(text).slice(0, 300) });
+    while (list.length > 30) list.shift();
+    rtmSeen.set(channelId, list);
+  }
+
+  const snippet = (s) => clean(s).replace(/\s+/g, ' ').slice(0, 40);
+
+  /** Live capture delivered something for this conversation around the notification (same text, or just then). */
+  function coveredByRtm(channelId, n) {
+    const body = snippet(n.body);
+    return (rtmSeen.get(channelId) ?? []).some(
+      (x) => x.at >= n.at - 60_000 && ((body && x.text.replace(/\s+/g, ' ').includes(body)) || Math.abs(x.at - n.at) < 15_000),
+    );
+  }
+
+  function sidebarEntries() {
+    return [...document.querySelectorAll('[data-qa-channel-sidebar-channel-id]')].map((el) => ({
+      id: el.getAttribute('data-qa-channel-sidebar-channel-id'),
+      name: clean(el.querySelector('.p-channel_sidebar__name, [data-qa="channel_sidebar_name"]')?.innerText || el.innerText).split('\n')[0],
+    }));
+  }
+
+  /** Conversation of a notification: an id in its tag / data, else the title matched against the sidebar. */
+  function channelFromNotification(n) {
+    const id = `${n.tag ?? ''} ${JSON.stringify(n.data ?? '')}`.match(/\b([CDG][A-Z0-9]{8,})\b/);
+    if (id) return id[1];
+    const title = clean(n.title);
+    const entries = sidebarEntries();
+    const channel = title.match(/#([\w.\-]+)/)?.[1];
+    if (channel) return entries.find((e) => e.name.replace(/^#/, '') === channel)?.id ?? null;
+    const who = title.replace(/^New (direct )?message from\s+/i, '').replace(/\s+(in|from)\s+.*$/i, '').trim();
+    if (!who) return null;
+    const exact = entries.find((e) => e.name === who);
+    if (exact) return exact.id;
+    return entries.find((e) => /^D/.test(e.id || '') && e.name.toLowerCase().startsWith(who.toLowerCase()))?.id ?? null;
+  }
+
+  /** Last resort: the conversation Slack itself says got a message just now (client.counts). */
+  async function channelFromCounts(teamId, at) {
+    const counts = await slackApi(teamId, 'client.counts', {}).catch(() => null);
+    if (!counts) return null;
+    const all = [...(counts.channels ?? []), ...(counts.ims ?? []), ...(counts.mpims ?? [])];
+    const recent = all
+      .map((c) => ({ id: c.id, latest: Number(c.latest || 0) * 1000 }))
+      .filter((c) => c.id && c.latest >= at - 120_000)
+      .sort((a, b) => b.latest - a.latest);
+    return recent[0]?.id ?? null;
+  }
+
+  /** Fetches the conversation's last 10 minutes (and fresh thread replies) and sends them like live messages. */
+  async function recoverConversation(teamId, channelId, n) {
+    const workspace = workspaceInfo();
+    if (!workspace.id) return 0;
+    const since = n.at / 1000 - 600;
+    const history = await slackApi(teamId, 'conversations.history', { channel: channelId, limit: '20', oldest: String(since) });
+    if (!history) return 0;
+    const raw = [...(history.messages ?? [])];
+    const threads = (history.messages ?? []).filter((m) => m.reply_count && Number(m.latest_reply || 0) >= since).slice(0, 3);
+    for (const parent of threads) {
+      const replies = await slackApi(teamId, 'conversations.replies', { channel: channelId, ts: parent.ts, oldest: String(since), limit: '20' });
+      for (const r of replies?.messages ?? []) if (r.ts !== parent.ts) raw.push(r);
+    }
+    // Replies to older threads (not in the last 10 minutes of history): look the thread up from the notification.
+    const threadTs = String(n.data?.thread_ts ?? n.data?.threadTs ?? '');
+    if (TS_RE.test(threadTs) && !threads.some((t) => t.ts === threadTs)) {
+      const replies = await slackApi(teamId, 'conversations.replies', { channel: channelId, ts: threadTs, oldest: String(since), limit: '20' });
+      for (const r of replies?.messages ?? []) if (r.ts !== threadTs) raw.push(r);
+    }
+    const messages = raw.map((m) => fromRtm({ ...m, channel: channelId })).filter(Boolean);
+    if (!messages.length) return 0;
+    await nameFromSlackApi(workspace.id, messages);
+    await send({
+      type: 'live',
+      origin: 'rtm', // same shape as real-time messages (API objects)
+      via: 'notification',
+      workspace,
+      account: accountInfo(),
+      channel: conversationInfo(channelId, messages[0]),
+      messages,
+    });
+    return messages.length;
+  }
+
+  async function checkNotification(n) {
+    try {
+      const teamId = routeIds().teamId;
+      if (!teamId || !liveEnabled) return;
+      let channelId = channelFromNotification(n);
+      if (channelId && coveredByRtm(channelId, n)) return;
+      if (!channelId) {
+        // Unknown conversation: if live capture saw this text anywhere, it's covered.
+        const body = snippet(n.body);
+        for (const list of rtmSeen.values()) if (body && list.some((x) => x.at >= n.at - 60_000 && x.text.replace(/\s+/g, ' ').includes(body))) return;
+        channelId = await channelFromCounts(teamId, n.at);
+        if (!channelId || coveredByRtm(channelId, n)) return;
+      }
+      const sent = await recoverConversation(teamId, channelId, n);
+      if (sent) notifyStats.recovered += sent;
+    } catch {
+      // best effort: the next history sync fills any gap
+    }
+  }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || e.origin !== location.origin) return;
+    if (e.data?.__slackCapture !== 'notification' || !liveEnabled) return;
+    const n = { title: e.data.title, body: e.data.body, tag: e.data.tag, data: e.data.data, at: Number(e.data.at) || Date.now() };
+    notifyStats.seen++;
+    notifyStats.lastAt = n.at;
+    setTimeout(() => checkNotification(n), NOTIFY_CHECK_DELAY);
   });
 
   chrome.storage.local.get('settings').then(({ settings }) => setLive(Boolean(settings?.liveCapture)));
@@ -1469,7 +1593,7 @@
     switch (msg?.type) {
       case 'ping':
         sendResponse({ ok: true, ...routeIds(), workspace: workspaceInfo(), account: accountInfo(), channel: currentChannel(),
-          rtm: { ...rtmStats, socket: rtmStats.socket || document.documentElement.hasAttribute('data-slack-capture-rtm') },
+          rtm: { ...rtmStats, socket: rtmStats.socket || document.documentElement.hasAttribute('data-slack-capture-rtm'), notifications: { ...notifyStats } },
         });
         return false;
       case 'listChannels':
