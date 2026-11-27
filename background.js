@@ -177,7 +177,7 @@ async function processCommands() {
           const res = await loadChannels();
           r = { ok: res.ok, summary: res.ok ? `${res.count} conversations found` : res.error };
         } else if (cmd.type === 'sync_open' || cmd.type === 'sync_channels') {
-          const res = await runJob('manual', cmd.type === 'sync_channels' ? (cmd.payload?.channelIds ?? []) : null);
+          const res = await runCommandSync(cmd);
           r = { ok: res.ok, summary: res.ok ? res.summary : res.error };
         } else {
           r = { ok: false, summary: `unknown command ${cmd.type}` };
@@ -484,7 +484,30 @@ async function navigateTo(tab, teamId, channelId) {
  * @param {'manual'|'auto'} trigger
  * @param {string[]|null} channelIds  null = just the channel currently open in Slack
  */
-async function runJob(trigger, channelIds) {
+/**
+ * A sync started from the dashboard / desktop app. payload: { scope: ids|selected|all, channelIds, range: {value, unit},
+ * mode: incremental|full }. range and mode override this browser's settings for this run only.
+ */
+async function runCommandSync(cmd) {
+  const p = cmd.payload ?? {};
+  const opts = { range: p.range ?? null, mode: p.mode ?? null, commandId: cmd.id };
+  if (cmd.type === 'sync_open') return runJob('manual', null, opts);
+  const scope = p.scope ?? 'ids';
+  if (scope === 'ids') return runJob('manual', p.channelIds ?? [], opts);
+  if (scope === 'selected') {
+    const s = await getSettings();
+    if (!s.selectedChannelIds?.length) return { ok: false, error: 'no conversations are selected for sync in this browser' };
+    return runJob('manual', s.selectedChannelIds, opts);
+  }
+  // scope 'all': every conversation in the Slack sidebar (refresh the list first so new ones are included).
+  const listed = await loadChannels();
+  const { channelCache } = await chrome.storage.local.get('channelCache');
+  const ids = (channelCache?.channels ?? []).map((c) => c.id).filter(Boolean);
+  if (!ids.length) return { ok: false, error: listed.ok ? 'no conversations found' : listed.error };
+  return runJob('manual', ids, opts);
+}
+
+async function runJob(trigger, channelIds, opts = {}) {
   if (job) return { ok: false, error: 'A sync is already running' };
   const remote = await remoteState();
   if (remote.status !== 'active') {
@@ -515,7 +538,7 @@ async function runJob(trigger, channelIds) {
   let failures = 0;
   let threadReplies = 0;
 
-  job = { id: crypto.randomUUID(), trigger, channels, index: 0, current: null, sent: 0, startedAt: Date.now(), stopRequested: false };
+  job = { id: crypto.randomUUID(), trigger, channels, index: 0, current: null, sent: 0, startedAt: Date.now(), stopRequested: false, commandId: opts.commandId ?? null };
   await publishState();
   await log('info', `${trigger === 'auto' ? 'Auto' : 'Manual'} sync started: ${channels.length} conversation(s)`);
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
@@ -525,7 +548,11 @@ async function runJob(trigger, channelIds) {
   try {
     await flushQueue();
     const { syncMarks = {} } = await chrome.storage.local.get('syncMarks');
-    const rangeCutoff = cutoffFromRange(settings.rangeValue, settings.rangeUnit);
+    const rangeCutoff = opts.range
+      ? cutoffFromRange(opts.range.value, opts.range.unit)
+      : cutoffFromRange(settings.rangeValue, settings.rangeUnit);
+    // Incremental: auto runs follow the setting; a command can ask for either explicitly.
+    const incremental = opts.mode ? opts.mode === 'incremental' : trigger === 'auto' && settings.incremental;
 
     for (let i = 0; i < channels.length && !job.stopRequested; i++) {
       const ch = channels[i];
@@ -539,10 +566,10 @@ async function runJob(trigger, channelIds) {
         continue;
       }
 
-      // Auto runs are incremental: stop at the newest message we already hold (minus 1h overlap).
+      // Incremental runs stop at the newest message we already hold (minus 1h overlap).
       let cutoffTs = rangeCutoff;
       const markKey = `${p.teamId}/${ch.id}`;
-      if (trigger === 'auto' && settings.incremental && syncMarks[markKey]) {
+      if (incremental && syncMarks[markKey]) {
         cutoffTs = Math.max(rangeCutoff ?? 0, Number(syncMarks[markKey]) - 3600);
       }
 
@@ -557,6 +584,7 @@ async function runJob(trigger, channelIds) {
             channel: live?.channel ?? ch,
             trigger,
             rangeFrom: cutoffTs ? new Date(cutoffTs * 1000).toISOString() : null,
+            ...(opts.commandId ? { commandId: opts.commandId } : {}),
           },
           live?.account ?? p.account,
         ),
